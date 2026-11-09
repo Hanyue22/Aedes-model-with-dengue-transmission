@@ -1,0 +1,1594 @@
+// This is a modification drive model.
+// If female is a drive homozygote, it will have higher immunity than heterozygotes.
+
+// General life cycle of Aedes: Age 0 = offspring, tough competition; Age 1 = pupa/young adult, don't contribute to competition or mate; Age >= 2, mate and reproduce.
+// "genotype fitness" influences offspring viability, and "fecundity fitness" influences female fecundity / male mating attractiveness.
+
+// Vector.tag of females: 0 = not mated; 1 = mated.
+// Vector(female).getValue("maternal/paternal"):stores the genotype of selected mate, just like how female mosquito stores the semen.
+// Vector.tagF: stores the fecundity fitness of selected mate. 
+
+// Vector.getValue("Dengue"): 0 = not infective / infected, 1 = infected, not infective, 1 + EXCUBATION = infected & infective.
+// Vector.getValue("Serotype"): infected virus serotype.
+
+// Host.getValue("Immunity"): a vector that storse long-term immunity to certain serotypes, c(0) is applied at first to avoid bugs.
+// Host.getValue("Serotype"): infected virus serotype.
+// Host.getValue("Dengue"): 0 = not infective / infected; 1 = infected, not infective; 1 + INCUBATION = infected & infective; 1 + INCUBATION + CURE_WEEKS = not infective / infected, reset to 0.
+// Host.getValue("CrossImmunity"): short-term immunity to all serotypes, set to 20 when host is infected and declines overtime.
+// Host.getValue("Counts"): counts of infection.
+species all initialize() {
+	 
+	 defineCfgParam("R1_INTRODUCTION_YEAR", 1);
+	 r1_introduction = 16 + 52 * (R1_INTRODUCTION_YEAR - 1);
+	 defineCfgParam("R1_INTRODUCTION_WEEK", r1_introduction);	 
+	 
+	 // To avoid weird bugs. Don't ask what it is.
+	 defineGlobal("ID", 100);
+
+    // Modify the number of offspring to calc the genetic load.
+    defineCfgParam("GL_RUN", F);
+    defineConstant("BONUS_POP_FACTOR", 1.0);
+    defineConstant("PREV_BONUS_POP_FACTOR", 1.0);
+    defineConstant("ACTUAL_LARVAE", 0);
+
+    // Shared Ecology:
+    defineCfgParam("BITING", 1.0);
+    defineCfgParam("REMATE_CHANCE", 0.05);
+    defineCfgParam("BETAMAX", 15); // 2 * BETAMAX is the average offspring number of one wild-type female in a timestep.
+    defineCfgParam("FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK", BITING);    
+    defineConstant("FEMALE_WEEKS_OF_GENERATION", 6); // This is maximum adult life span.
+    defineConstant("MALE_WEEKS_OF_GENERATION", 4); // This is maximum adult life span.
+    	// This is a factor to equalize males and females of age 1, in spite of the different age distribution due to different life span.
+    	normalize = (MALE_WEEKS_OF_GENERATION + 1) / (FEMALE_WEEKS_OF_GENERATION + 1);  
+    
+    defineConstant("INITIAL_FEMALE_AGE_DISTRIBUTION", c(FEMALE_WEEKS_OF_GENERATION,FEMALE_WEEKS_OF_GENERATION:1)/sum(1:FEMALE_WEEKS_OF_GENERATION));
+    defineConstant("FEMALE_LIFESPAN", sum(c(1:FEMALE_WEEKS_OF_GENERATION)*INITIAL_FEMALE_AGE_DISTRIBUTION[1:FEMALE_WEEKS_OF_GENERATION]));// This is average adult life span.
+	 defineConstant("INITIAL_MALE_AGE_DISTRIBUTION", c(MALE_WEEKS_OF_GENERATION,MALE_WEEKS_OF_GENERATION:1)/sum(1:MALE_WEEKS_OF_GENERATION) * normalize);
+    defineConstant("MALE_LIFESPAN", sum(c(1:MALE_WEEKS_OF_GENERATION)*INITIAL_MALE_AGE_DISTRIBUTION[1:MALE_WEEKS_OF_GENERATION]));// This is average adult life span.
+    	survival_rate_m = c(1);
+				for (i in 1:MALE_WEEKS_OF_GENERATION){
+    				survival_rate_m = c(survival_rate_m, (MALE_WEEKS_OF_GENERATION - i)/(MALE_WEEKS_OF_GENERATION + 1 - i));}
+    	survival_rate_f = c(1);
+				for (i in 1:FEMALE_WEEKS_OF_GENERATION){
+    				survival_rate_f = c(survival_rate_f,(FEMALE_WEEKS_OF_GENERATION - i)/(FEMALE_WEEKS_OF_GENERATION - i + 1));}
+    defineConstant("SURVIVE_RATE_M", survival_rate_m);
+    defineConstant("SURVIVE_RATE_F", survival_rate_f);
+    
+    
+    // Capacity:
+    defineCfgParam("NUM_ADULT_FEMALES", 4000);
+    defineGlobal("TOTAL_FEMALES", NUM_ADULT_FEMALES + (FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * BETAMAX + INITIAL_FEMALE_AGE_DISTRIBUTION[0]) * NUM_ADULT_FEMALES);
+    defineConstant("CALC_INITIAL_FEMALE_AGE", sum(INITIAL_FEMALE_AGE_DISTRIBUTION) + FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * BETAMAX);
+    defineConstant("CALC_INITIAL_MALE_AGE", sum(INITIAL_MALE_AGE_DISTRIBUTION) + FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * BETAMAX);    
+    defineCfgParam("CAPACITY", TOTAL_FEMALES + TOTAL_FEMALES * CALC_INITIAL_MALE_AGE / CALC_INITIAL_FEMALE_AGE); 
+    
+	 // Exclusive ecology:
+	 // Vector A: 	 
+	 defineCfgParam("AEGYPTI_PORTION", 2.0);
+	 defineCfgParam("AEGYPTI_CAPACITY", AEGYPTI_PORTION * CAPACITY);
+	 defineCfgParam("AEGYPTI_BITING", BITING);
+	 // Vector B:
+	 defineCfgParam("ALBOPICTUS_PORTION", 0.0);
+	 defineCfgParam("ALBOPICTUS_CAPACITY", ALBOPICTUS_PORTION * CAPACITY);
+	 defineCfgParam("ALBOPICTUS_BITING", BITING);
+	 // Host:
+	 defineCfgParam("HUMAN_POPULATION", 10000);
+	 defineCfgParam("DECREASE", 0.00075);
+	 defineCfgParam("INCREASE", 0.00085);
+	 defineCfgParam("INITIAL_DENGUE", 0.000);// People who are currently infected.
+	 defineCfgParam("HISTORICAL_DENGUE", 0.8);// People who had been infected.
+	 // Distribution of initial dengue. Sum == 1.
+	 defineGlobal("INITIAL_DENGUE_1", 0.25);
+	 defineGlobal("INITIAL_DENGUE_2", 0.25);
+	 defineGlobal("INITIAL_DENGUE_3", 0.25);
+	 defineGlobal("INITIAL_DENGUE_4", 0.25);
+	 	  
+	 // Dengue:
+	 defineCfgParam("H_V_RATE", 0.4375); // Transmission rate from hosts to vectors.
+	 defineCfgParam("V_H_RATE", 0.6); // Transmission rate from vectors to hosts.
+	 defineCfgParam("EXCUBATION", 1); // Time for vectors to become infective after being transmitted.
+	 defineCfgParam("INCUBATION", 1); // Time for hosts to become infective after being transmitted.
+	 defineCfgParam("CURE_WEEKS", 1); // Time for hosts to cure and return healthy / uninfective.
+	 defineCfgParam("CROSS_IMMUNITY", 16);	// A short-term immunnity to all dengue strains after infection.	 
+	 defineCfgParam("WEEKLY_INTRODUCTION_RATE", 1.0); // The possibility of introduction of a dengue carrier.
+	 defineCfgParam("INTRO_MOS", 0.0);
+	 defineCfgParam("REINFACTION", 0.05);
+	 
+	 // Season:
+	 defineCfgParam("SEASON", T);	 
+	 defineCfgParam("SEASONAL_AMPLITUDE", 6.5);
+	 defineCfgParam("SEASONAL_DURATION", 20); 
+	 
+	 // Track dengue introduction
+	 defineGlobal("Intro_Mosquito", 0);// Track actual introduction
+	 defineGlobal("Intro_Human", 0);// Track actual introduction	 
+	 
+    // Competition:
+	 defineCfgParam("INTERSPECIFIC_COMP_FACTOR_A", 1.0); // A : MEANS THE EFFECT OF A TO B
+	 defineCfgParam("INTERSPECIFIC_COMP_FACTOR_B", 1.0); // B : MEANS THE EFFECT OF B TO A
+    defineGlobal("EXPECTED_COMPETITION_A", NUM_ADULT_FEMALES * AEGYPTI_PORTION * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK + ALBOPICTUS_PORTION * NUM_ADULT_FEMALES * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * INTERSPECIFIC_COMP_FACTOR_B); // Expected competition of vector A: Aedes aegypti.
+	 defineGlobal("EXPECTED_COMPETITION_B", NUM_ADULT_FEMALES * ALBOPICTUS_PORTION * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK + NUM_ADULT_FEMALES * AEGYPTI_PORTION * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * INTERSPECIFIC_COMP_FACTOR_A); // Expected competition of vector B: Aedes albopictus.
+
+	 // Drive types:
+	 // Unfortunately, you can't define and modify drive types easily in this model. It is built specifically for the drives mentioned at the beginning.
+	 // If you do want to model other kinds of drives, check and modify the mechanisms in the "modifyChild" callback, the "isInfertile" function and other sections CAREFULLY.
+	 // BUT! GOOD NEWS! You can define parameters for each drive, respectively!
+	 
+	 // If you turn it OFF, nothing will be released, no matter how you set other parameters below.
+	 defineCfgParam("DROP", T); 
+	 
+	 // Drive number: ALWAYS KEEP IT '1' IN MODIFICATION MODELS!!!!!!!!!!!
+	 defineCfgParam("DRIVE_NUMBER", 1);// DON'T CHANGE IT IN MODIFICATION MODELS!!!!!! 
+	 
+	 // Drop time
+	 defineCfgParam("DROP_TIME", 16);// The first time we release a drive. After that, another drive is released every 52 weeks, until all drives are released.
+	 
+	 // Drop interval
+	 defineCfgParam("DROP_INTERVAL", 52);
+	 
+	 // For modification drive:
+    defineCfgParam("IMMUNE_TYPE", c(1, 2, 3, 4)); // 1/2/3/4
+    // Theoretically, we should define two parameters: intake (infection) rate and output (transmission) rate. However, in this model, virus has no impact on mosquitos, so we combined these parameters.
+    defineCfgParam("HOMO_IMMUNE", 0.95);
+    defineCfgParam("HETE_IMMUNE", 0.95);
+    
+    // Mechanism decided by target gene:
+    defineCfgParam("HAPLOLETHAL", F);
+    defineCfgParam("HAPLOSUFFICIENT", T);
+	 
+	 defineCfgParam("ADJUST", 0.91); //Check its use in the code. 	 
+	 
+	 // Drive parameters for drive 1 in species A:
+	 defineCfgParam("DROP_1", 0.005);
+	 defineCfgParam("DROP_SIZE_1", DROP_1 * CAPACITY);
+	 defineCfgParam("DD_FITNESS_VALUE_1", 0.85); // This is what you want to vary for modification drives.
+	 defineCfgParam("DX_FITNESS_VALUE_1", sqrt(DD_FITNESS_VALUE_1));
+	 defineCfgParam("DRIVE_CONVERSION_RATE_1", 0.5);
+	 defineCfgParam("LATE_GERMLINE_RESISTANCE_CUT_RATE_1", 0.2);
+	 defineCfgParam("EMBRYO_RESISTANCE_CUT_RATE_1", 0.1);
+    defineCfgParam("SOMATIC_FITNESS_MULTIPLIER_F_1", 1.0); // This is not a parameter we often vary for modification drives.
+    defineCfgParam("SOMATIC_FITNESS_MULTIPLIER_M_1", 1.0);
+    defineCfgParam("R1_OCCURRENCE_RATE_1", 0.0005); // This rate is usually higher for modification drives than suppression ones.
+    
+    // Drive parameters for drive 2 in species B:
+    defineCfgParam("DROP_2", 0.0);
+    defineCfgParam("DROP_SIZE_2", DROP_2 * CAPACITY);
+	 defineCfgParam("DD_FITNESS_VALUE_2", 1.0); // This is what you want to vary for modification drives.
+	 defineCfgParam("DX_FITNESS_VALUE_2", sqrt(DD_FITNESS_VALUE_2));
+	 defineCfgParam("DRIVE_CONVERSION_RATE_2", 0.85);
+	 defineCfgParam("LATE_GERMLINE_RESISTANCE_CUT_RATE_2", 0.85);
+	 defineCfgParam("EMBRYO_RESISTANCE_CUT_RATE_2", 0.9);
+    defineCfgParam("SOMATIC_FITNESS_MULTIPLIER_F_2", 1.0); // This is not a parameter we often vary for modification drives.
+    defineCfgParam("SOMATIC_FITNESS_MULTIPLIER_M_2", 1.0);
+    defineCfgParam("R1_OCCURRENCE_RATE_2", 0.0);
+    
+    // Ecology parameters:
+    defineCfgParam("MAX_ATTEMPTS_TO_FIND_SUITABLE_MATE", 10);
+    defineCfgParam("LOW_DENSITY_GROWTH_RATE", 6);
+    defineCfgParam("HETEROZYGOUS_DROP", T);
+    
+    // Parameters used in output module:
+    defineGlobal("DRIVE_LOW", 0);
+    
+	 // This simulation will use a non-Wright-Fisher model.
+    initializeSLiMModelType("nonWF");
+    }
+
+	 // Set gene elements for Ades mosquitos	   
+species vector initialize() {
+	 
+	 initializeSpecies(avatar = "V");  
+	 
+	 wt = initializeMutationType("m1", 0.5, "f", 0.0);
+    dr = initializeMutationType("m2", 0.5, "f", 0.0);
+    r1 = initializeMutationType("m3", 0.5, "f", 0.0);
+    r2 = initializeMutationType("m4", 0.5, "f", 0.0);
+    // A species mark.
+    Aeg = initializeMutationType("m5", 0.5, "f", 0.0);
+    Alb = initializeMutationType("m6", 0.5, "f", 0.0);
+	   
+	 variation1 = c(Aeg, Alb);  
+	 variation2 = c(wt, dr, r1, r2);
+	   
+	 initializeGenomicElementType("g1", variation1, c(1, 1));
+	 initializeGenomicElementType("g2", variation2, c(1, 1, 1, 1));
+	   
+	 initializeGenomicElement(g1, 0, 0);
+	 initializeGenomicElement(g2, 1, DRIVE_NUMBER);
+	   
+	 // These variations overwrite one another.
+	 variation1.mutationStackPolicy = "l";
+	 variation1.mutationStackGroup = 1;
+	 
+	 variation2.mutationStackPolicy = "l";
+	 variation2.mutationStackGroup = 1;
+
+	 // No mutation in this model.
+	 initializeMutationRate(0.0);
+			
+	 // These two sites are unlinked.
+	 initializeRecombinationRate(0.0);
+
+	 // Simulate sexual reproduction: A for autosome.
+	 initializeSex("A");
+
+	 }
+    
+// Human settings.    
+species host initialize() {
+	 initializeSpecies(avatar = "H");}
+	     
+//// HELPER FUNC FOR CONSTANTS THAT MAY ASLO BE CONFIGURED VIA COMMAND LINE.
+function (void)defineCfgParam(string$ name, lifs value) {
+    if (!exists(name))
+        defineConstant(name, value);
+}
+
+//// HELPER FUNCTION FOR FORMING A RESISTANCE ALLELE AT A GIVEN LOCUS.
+function (void)addResistanceAllele(o<Genome>$ genome, i$ locus, f$ r1_rate) {
+    // Resistance alleles form at a specified rate.
+    // m3 is R1 allele, m4 is R2.
+    if(runif(1) < r1_rate)
+        genome.addNewDrawnMutation(m3, locus);
+    else
+        genome.addNewDrawnMutation(m4, locus);
+}
+   
+//// FUNCTION FOR CAS9 EFFECTS IN THE GERMLINE).
+function (void)germline(o<Genome>$ child_chromosome, o<Individual>$ parent, f$ resistance_rate, f$ r1_rate, [l maleParent=F]) {
+
+if (!maleParent){
+	 	 loci_with_m2 = parent.genomes.positionsOfMutationsOfType(m2);  // Loci with drive allele (m2).    
+    	 if (size(loci_with_m2) == 0)
+    	 	return;
+    	 for (locus in loci_with_m2) {
+        
+        // Check if chromosome has wild-type allele at this locus.
+        if (!child_chromosome.containsMarkerMutation(m1, locus))
+            next;
+            
+        if (runif(1) < resistance_rate)
+            addResistanceAllele(child_chromosome, locus, r1_rate);}}
+            
+if (maleParent){
+
+    // Retrieve father's genotype dictionary.
+    maternal = parent.getValue("maternal");
+	 paternal = parent.getValue("paternal");
+    for (locus in 1:DRIVE_NUMBER) {
+        // Check father's genotype at this locus.
+        loci = asString(locus);
+        if (maternal.getValue(loci) != 2 & paternal.getValue(loci) != 2 )
+            next;  // No drive allele at this locus, skip.
+
+        // Check if child chromosome has wild-type allele at this locus.
+        if (!child_chromosome.containsMarkerMutation(m1, locus))
+            next;
+
+        // Apply Cas9 cutting and resistance formation.
+        if (runif(1) < resistance_rate)
+            addResistanceAllele(child_chromosome, locus, r1_rate);
+    }
+   }
+}
+
+//// FUNCTION FOR CAS9 EFFECTS IN EMBRYO (USING MOTHER'S GENOTYPE).
+function (void)embryo(o<Genome>$ child_chromosome, o<Individual>$ mother, f$ resistance_rate, f$ r1_rate) {
+
+    // Check if mother has m2 at any locus.
+    mother_loci_with_m2 = mother.genomes.positionsOfMutationsOfType(m2);  // Loci with drive allele (m2).
+
+    if (size(mother_loci_with_m2) == 0)
+        return;  // If no m2 allele exists, return.
+
+    for (locus in mother_loci_with_m2) {
+        // Check if child chromosome has wild-type allele (m1) at the same locus.
+        if (!child_chromosome.containsMarkerMutation(m1, locus))
+            next;
+
+        // Apply Cas9 cutting and resistance formation at this locus.
+        if (runif(1) < resistance_rate)
+            addResistanceAllele(child_chromosome, locus, r1_rate);
+    }
+}
+
+
+//// FUNCTION FOR SIMULATING HOMOLOGY DIRECTED REPAIR (USING GENOTYPE DICTIONARY).
+function (void)hdr(o<Genome>$ child_chromosome, o<Individual>$ parent, f$ conversion_rate, [l maleParent=F]) {
+
+	 // For mother, simply check her genotype.
+	 if (!maleParent){
+	 	 loci_with_m2 = parent.genomes.positionsOfMutationsOfType(m2);  // Loci with drive allele (m2).    
+    	 if (size(loci_with_m2) == 0)
+    	 	return;
+    	 for (locus in loci_with_m2) {
+        
+        // Check if chromosome has wild-type allele at this locus.
+        if (!child_chromosome.containsMarkerMutation(m1, locus))
+            next;
+
+        // Apply homing effect.
+        if (runif(1) < conversion_rate)
+            child_chromosome.addNewDrawnMutation(m2, locus);}
+    }
+    
+    // For father, check mother's tag	 	
+    if (maleParent){
+    maternal = parent.getValue("maternal");
+	 paternal = parent.getValue("paternal");
+    for (locus in 1:DRIVE_NUMBER) {
+        // Check father's genotype at this locus.
+        loci = asString(locus);
+        if (maternal.getValue(loci) != 2 & paternal.getValue(loci) != 2 )
+            next;  // No drive allele at this locus, skip.
+
+        // Check if child chromosome has wild-type allele at this locus.
+        if (!child_chromosome.containsMarkerMutation(m1, locus))
+            next;
+
+        // Apply homing effect.
+        if (runif(1) < conversion_rate)
+            child_chromosome.addNewDrawnMutation(m2, locus);}
+    }
+}
+
+//// HELPER FUNCTION TO OVERWRITE ONE GENOME WITH ANOTHER.
+function (void)copy_genome(o<Genome>$ source, o<Genome>$ destination) {
+    m1_loci = source.positionsOfMutationsOfType(m1);
+    m2_loci = source.positionsOfMutationsOfType(m2);
+    m3_loci = source.positionsOfMutationsOfType(m3);
+    m4_loci = source.positionsOfMutationsOfType(m4);
+    m5_loci = source.positionsOfMutationsOfType(m5);
+    m6_loci = source.positionsOfMutationsOfType(m6);
+
+    for (i in seqAlong(m1_loci))
+        destination.addNewDrawnMutation(m1, m1_loci[i]);
+    for (i in seqAlong(m2_loci))
+        destination.addNewDrawnMutation(m2, m2_loci[i]);
+    for (i in seqAlong(m3_loci))
+        destination.addNewDrawnMutation(m3, m3_loci[i]);
+    for (i in seqAlong(m4_loci))
+        destination.addNewDrawnMutation(m4, m4_loci[i]);
+    for (i in seqAlong(m5_loci))
+        destination.addNewDrawnMutation(m5, m5_loci[i]);
+    for (i in seqAlong(m6_loci))
+        destination.addNewDrawnMutation(m6, m6_loci[i]);
+}
+
+//ticks all R1_INTRODUCTION_WEEK first() {
+//
+//	defineGlobal("R1_OCCURRENCE_RATE_1", 0.0005);
+//
+//}
+
+// Define serotypes at the beginning of each year.
+ticks all first() {
+    if ((vector.cycle - 16) % 52 == 0) {
+        print("SELECT");
+
+        // Randomly select a dominance serotype (1, 2, 3, or 4)
+        dominanceSerotype = sample(c(1,2,3,4), 1);
+
+        // Assign the dominance serotype a random proportion between 0.5 and 1
+        dominanceProportion = runif(1, 0.5, 1);
+
+        // Initialize proportions for the remaining serotypes
+        remainingProportion = 1 - dominanceProportion;
+        remainingSerotypes = setDifference(c(1,2,3,4), c(dominanceSerotype));
+
+        // Randomly distribute the remaining proportion using normalized random sampling
+        randomValues = c(runif(1), runif(1), runif(1));
+        sumValues = sum(randomValues);
+        seroRemaining = (randomValues / sumValues) * remainingProportion;
+
+        // Assign values based on dominance
+        defineGlobal("INITIAL_DENGUE_" + dominanceSerotype, dominanceProportion);
+        defineGlobal("INITIAL_DENGUE_" + remainingSerotypes[0], seroRemaining[0]);
+        defineGlobal("INITIAL_DENGUE_" + remainingSerotypes[1], seroRemaining[1]);
+        defineGlobal("INITIAL_DENGUE_" + remainingSerotypes[2], seroRemaining[2]);
+
+        // Print results
+        print("INITIAL_DENGUE_" + dominanceSerotype + " : " + dominanceProportion);
+        print("INITIAL_DENGUE_" + remainingSerotypes[0] + " : " + seroRemaining[0]);
+        print("INITIAL_DENGUE_" + remainingSerotypes[1] + " : " + seroRemaining[1]);
+        print("INITIAL_DENGUE_" + remainingSerotypes[2] + " : " + seroRemaining[2]);
+    }
+}
+
+// GENE DRIVE IMPLEMENTATION RULES THAT OCCUR IN EVERY CHILD.
+species vector 1: modifyChild() {
+    // Get father's genotype
+    maternal = parent1.getValue("maternal");
+    paternal = parent1.getValue("paternal");     
+        
+        if (runif(1) < 0.5) {
+        	for (locus in 1:DRIVE_NUMBER) {
+        	loci = asString(locus);   
+            // Child inherits father's maternal chromosome.
+            if (maternal.getValue(loci) == 1)
+                child.genome2.addNewDrawnMutation(m1, locus);
+            else if (maternal.getValue(loci) == 2)
+                child.genome2.addNewDrawnMutation(m2, locus);
+            else if (maternal.getValue(loci) == 3)
+                child.genome2.addNewDrawnMutation(m3, locus);
+            else if (maternal.getValue(loci) == 4)
+                child.genome2.addNewDrawnMutation(m4, locus);}
+        } else {
+        	for (locus in 1:DRIVE_NUMBER) {
+        	loci = asString(locus);   
+            // Child inherits father's paternal chromosome.
+            if ((paternal.getValue(loci) == 1))
+                child.genome2.addNewDrawnMutation(m1, locus);
+            else if (paternal.getValue(loci) == 2)
+                child.genome2.addNewDrawnMutation(m2, locus);
+            else if (paternal.getValue(loci) == 3)
+                child.genome2.addNewDrawnMutation(m3, locus);
+            else if (paternal.getValue(loci) == 4)
+                child.genome2.addNewDrawnMutation(m4, locus);}
+        }
+    
+	// Define child's species based on mother's species, and apply drive effects.
+	   species_A = parent1.countOfMutationsOfType(m5);
+	 //species_B = parent1.countOfMutationsOfType(m6); We don't actually need this.   		
+  		
+  		if(species_A){
+  			if(DROP){
+  			// First, homology directed repair allows for homing to occur.
+      	hdr(child.genome1, parent1, DRIVE_CONVERSION_RATE_1); // Germ cells of mother.
+      	hdr(child.genome2, parent1, DRIVE_CONVERSION_RATE_1, maleParent=T); // Germ cells of father, but based on mother's tag.
+         // Then resistance alleles form.
+         germline(child.genome1, parent1, LATE_GERMLINE_RESISTANCE_CUT_RATE_1, R1_OCCURRENCE_RATE_1);
+      	germline(child.genome2, parent1, LATE_GERMLINE_RESISTANCE_CUT_RATE_1, R1_OCCURRENCE_RATE_1, maleParent=T);
+         // Apply effects that happen in the embryo.
+         embryo(child.genome1, parent1, EMBRYO_RESISTANCE_CUT_RATE_1, R1_OCCURRENCE_RATE_1);
+         embryo(child.genome2, parent1, EMBRYO_RESISTANCE_CUT_RATE_1, R1_OCCURRENCE_RATE_1);}
+  			// Finally, add species mark.
+  			child.genome1.addNewDrawnMutation(m5, 0);
+         child.genome2.addNewDrawnMutation(m5, 0);
+         }
+         
+      else{ // Apply parameters for species B.
+      	if(DROP){       
+      	// First, homology directed repair allows for homing to occur.
+      	hdr(child.genome1, parent1, DRIVE_CONVERSION_RATE_2); // Germ cells of mother.
+      	hdr(child.genome2, parent1, DRIVE_CONVERSION_RATE_2, maleParent=T); // Germ cells of father, but based on mother's tag.
+         // Then resistance alleles form.
+         germline(child.genome1, parent1, LATE_GERMLINE_RESISTANCE_CUT_RATE_2, R1_OCCURRENCE_RATE_2);
+      	germline(child.genome2, parent1, LATE_GERMLINE_RESISTANCE_CUT_RATE_2, R1_OCCURRENCE_RATE_2, maleParent=T);
+         // Apply effects that happen in the embryo.
+         embryo(child.genome1, parent1, EMBRYO_RESISTANCE_CUT_RATE_2, R1_OCCURRENCE_RATE_2);
+         embryo(child.genome2, parent1, EMBRYO_RESISTANCE_CUT_RATE_2, R1_OCCURRENCE_RATE_2);}
+  			// Finally, add species mark.
+  			child.genome1.addNewDrawnMutation(m6, 0);
+         child.genome2.addNewDrawnMutation(m6, 0);
+         }   
+   
+    child.tag = 0;
+    child.tagF = 1.0;
+    
+    dr = sum(child.genomes.countOfMutationsOfType(m2));
+    r2 = sum(child.genomes.countOfMutationsOfType(m4));
+    
+    if (HAPLOLETHAL)
+    	if (r2 > 0)
+    		return F;
+    		
+    if (HAPLOSUFFICIENT)
+    	if (r2 == 2)
+    		return F;
+    		
+    if (dr == 2)
+    	if (runif(1) > DD_FITNESS_VALUE_1^ADJUST)
+    			return F;
+    		
+    if (dr == 1)
+    	if (runif(1) > DX_FITNESS_VALUE_1^ADJUST)
+    			return F;
+    
+    return T;
+}
+
+//// RULES FOR FITNESS BASED ON GENOTYPE.
+function (f$)genotypeFitness(o<Individual>$ ind) {
+    // Check individual's species, and apply corresponding parameters.
+    species_A = ind.countOfMutationsOfType(m5);
+    
+    if(species_A){
+    DD_FITNESS_VALUE = DD_FITNESS_VALUE_1;
+    DX_FITNESS_VALUE = DX_FITNESS_VALUE_1;}
+    else{
+    DD_FITNESS_VALUE = DD_FITNESS_VALUE_2;
+    DX_FITNESS_VALUE = DX_FITNESS_VALUE_2;}
+    
+    // Representation of the value of the two chromosomes.
+    fitness_value = 1.0;
+
+    // Check two chromosomes:
+	 for (locus in 1:DRIVE_NUMBER){
+	 	drive_on_1 = ind.genome1.containsMarkerMutation(m2, locus);
+	 	drive_on_2 = ind.genome2.containsMarkerMutation(m2, locus);
+    	
+    	if (drive_on_1 & drive_on_2){
+			fitness_value = DD_FITNESS_VALUE^(1 - ADJUST) * fitness_value;
+			return fitness_value;}
+    
+	   if (drive_on_1 | drive_on_2){   
+    		fitness_value = DX_FITNESS_VALUE^(1 - ADJUST) * fitness_value;
+      	return fitness_value;}
+      	}		      
+    return fitness_value;
+}
+
+//// RULES FOR FITNESS AFFECT FECUNDITY BASED ON GENOTYPE.
+function (f$)fecundityFitness(o<Individual>$ ind) {
+ species_A = ind.countOfMutationsOfType(m5);
+    
+    if (species_A){
+    	if (ind.sex == "F")
+    		somatic = SOMATIC_FITNESS_MULTIPLIER_F_1;
+    	else
+    		somatic = SOMATIC_FITNESS_MULTIPLIER_M_1;}
+    else{
+    	if (ind.sex == "F")
+    		somatic = SOMATIC_FITNESS_MULTIPLIER_F_2;
+    	else
+    		somatic = SOMATIC_FITNESS_MULTIPLIER_M_2;}
+
+	 fecundity = 1.0;
+	 
+	 // Check two chromosomes:
+	 for (locus in 1:DRIVE_NUMBER){
+	 	drive_on_1 = ind.genome1.containsMarkerMutation(m2, locus);
+	 	drive_on_2 = ind.genome2.containsMarkerMutation(m2, locus);
+	 	wt_1 = ind.genome1.containsMarkerMutation(m1, locus);
+	 	wt_2 = ind.genome2.containsMarkerMutation(m1, locus);	 
+    
+	   if (drive_on_1 | drive_on_2)
+        if (wt_1 | wt_2)     
+    			fecundity = somatic * fecundity;}
+    			
+		// Drive homozygotes have 2 recoded copies of target gene, so they're healthy.
+      				      
+    return fecundity;
+
+}
+
+//// FUNCTION FOR EVALUATING INFERTILITY CAUSED BY SUPRESSION DRIVES.
+function (logical)isInfertile(o<Individual>$ ind) {
+  
+    return F;
+}
+
+//SEASONAL Function
+function (float)SEASONAL(integer gen, integer duration) {
+	now_gen = gen % 52;
+	if ((now_gen < 25.5 - duration / 2)|(now_gen > 25.5 + duration / 2))
+		return 0.0;
+	else
+		return 0.5 + cos((now_gen - 25.5) * 2 * PI / duration) / 2;
+}
+
+//SEASONAL Function for introducing dengue patient
+function (float)LessSEASONAL(integer gen) {
+	now_gen = gen % 52;
+	return (cos((now_gen-51/2)*2*PI/51) + 1) / 2;
+}
+
+// Function to detect and store genotypes in a dictionary
+function (object<Dictionary>$)setTag(o<Individual>$ ind, [l maternal = T]) {
+    // Initialize a dictionary to store genotypes
+    genotypeDict = Dictionary();
+    value = 0;
+    if (maternal){
+    // Iterate through loci from 1 to DRIVE_NUMBER
+    	for (locus in 1:DRIVE_NUMBER) {
+        
+        // Check the maternal chromosome (genome1) for mutations
+        if (ind.genome1.containsMarkerMutation(m1, locus))
+            value = 1;
+        else if (ind.genome1.containsMarkerMutation(m2, locus))
+            value = 2;
+        else if (ind.genome1.containsMarkerMutation(m3, locus))
+            value = 3;
+        else if (ind.genome1.containsMarkerMutation(m4, locus))
+            value = 4;
+        
+        genotypeDict.setValue(asString(locus), value);}}
+        
+    else{
+    	for (locus in 1:DRIVE_NUMBER) {   
+        // Check the paternal chromosome (genome2) for mutations
+        if (ind.genome2.containsMarkerMutation(m1, locus))
+            value = 1;
+        else if (ind.genome2.containsMarkerMutation(m2, locus))
+            value = 2;
+        else if (ind.genome2.containsMarkerMutation(m3, locus))
+            value = 3;
+        else if (ind.genome2.containsMarkerMutation(m4, locus))
+            value = 4;
+            
+        genotypeDict.setValue(asString(locus), value);}}
+    
+    return genotypeDict;
+}
+
+
+//// REPRODUCTION RULES FOR EACH FEMALE.
+species vector reproduction(NULL) {
+
+all = p1.individuals;
+adult = all[all.age >= 2];
+adult_f = adult[adult.sex == "F"];
+adult_m = adult[adult.sex == "M"];
+adult_f_A = adult_f[adult_f.countOfMutationsOfType(m5) > 0];
+adult_f_B = adult_f[adult_f.countOfMutationsOfType(m6) > 0];
+adult_m_A = adult_m[adult_m.countOfMutationsOfType(m5) > 0];
+adult_m_B = adult_m[adult_m.countOfMutationsOfType(m6) > 0];
+humans = p100.individuals;
+n_humans = length(humans);
+
+// First, species A find mate, bite and reproduce.
+for (female_A in adult_f_A){
+
+    // Check to see if this female is infertile because of drive mechanics:
+    if (isInfertile(female_A))
+        next;
+
+    if (female_A.tag == 0 | runif(1) < REMATE_CHANCE)
+        // Individual has not yet mated, or want to remate.       
+        if (size(adult_m_A) > 0) {
+            // Females choose a random provisional mate, but make a final mating decision based on the
+            // attractiveness of that mate, as determined by the fitness of the mate. If a mate is
+            // rejected, the female tries again, up to a maximum number of tries, after which she gives up.
+            attempt_no = 0;
+            found_mate = F;
+            while (1) {
+                mate_no = 0;
+                if (size(adult_m_A) > 1)
+                    mate_no = rdunif(1, max=size(adult_m_A) - 1);
+                selected_mate = adult_m_A[mate_no];
+                // Determine attractiveness of potential mate.
+                mate_attractiveness = fecundityFitness(selected_mate);
+                // Determine if this mate is chosen, based on attractiveness.
+                if (runif(1) < mate_attractiveness) {
+                    found_mate = T;
+                    break;  // Select this mate.
+                }
+                // After ten candidates fail, female gives up.
+                attempt_no = attempt_no + 1;
+                if (attempt_no == MAX_ATTEMPTS_TO_FIND_SUITABLE_MATE)
+                    break;
+            }
+            if (found_mate) {
+                // Mate has now been selected, record his genotype.
+                female_A.setValue("maternal", setTag(selected_mate, maternal = T));
+                female_A.setValue("paternal", setTag(selected_mate, maternal = F));
+                female_A.tag = 1;
+                // Check to see if mate is infertile because of drive mechanics.
+                // tagF holds the somatic fitness multiplier of the mate.
+                if (isInfertile(selected_mate)) {
+                	female_A.tagF = 100.0;
+                  next;}
+                // Check to see if male somatic fitness penalty will decrease number of offspring. Fecundity effected only in offspring of D/+ males.
+               
+	             if (selected_mate.countOfMutationsOfType(m1) & selected_mate.countOfMutationsOfType(m2))
+                  female_A.tagF = SOMATIC_FITNESS_MULTIPLIER_M_1;
+                }
+            }
+        
+	 // Females bite.
+	 
+	 if (n_humans == 0)
+			next; // Female doesn't bite or reproduce.
+	 else if (runif(1) > AEGYPTI_BITING)
+	 		next; // Female doesn't want to bite.
+	 else{
+			human = humans[rdunif(1, 0, n_humans-1)];
+			
+	 		// Dengue transmission.
+		 	Host = human.getValue("Dengue");
+		 	Vector = female_A.getValue("Dengue");
+		 	HostType = human.getValue("Serotype");
+		 	VectorType = female_A.getValue("Serotype");
+		 	HostImmunity = human.getValue("Immunity");
+		 	Cross = human.getValue("CrossImmunity");
+		 	InfectionCounts = human.getValue("Counts");
+		 	
+			if (Cross == 0) // Host doesn't has short-term cross-immunity.						 			 	
+		 		if (Host == 0) // Host is not infected/infective.	
+					if (Vector >= 1 + EXCUBATION){ // Vector is infected and infective.
+						if (!any(HostImmunity == VectorType) | runif(1) < REINFACTION) // Host is not immune to this serotype.
+							if (runif(1) < V_H_RATE){ // Host is unlucky engough.
+								human.setValue("Dengue", 1); // Host is infected.
+								human.setValue("Serotype", VectorType);
+								human.setValue("Immunity", c(VectorType, HostImmunity)); // Host get long-term immunity to this serotype.
+								human.setValue("CrossImmunity", CROSS_IMMUNITY); // Host get short-term cross-immunity to all strains.
+								InfectionCounts = InfectionCounts + 1;
+								human.setValue("Counts", InfectionCounts); 
+							}
+					}
+				
+				// If Host = 1, infected but not infective, nothing happens.			
+			
+				if (Host >= (1 + EXCUBATION)) // Host is infected and infective.						
+					if (Vector == 0) // Vector is not infected/infective.
+						if (runif(1) < H_V_RATE){ // Vector is unlucky engough.
+							
+							// Check if vector has drive:
+							if (female_A.countOfMutationsOfType(m2) == 2){// 2 antibody copies
+								if ((any(IMMUNE_TYPE == HostType) & runif(1) > HOMO_IMMUNE)|
+									  !any(IMMUNE_TYPE == HostType)){
+										female_A.setValue("Dengue", 1); // Vector is infected.
+										female_A.setValue("Serotype", HostType);}}
+							
+							else if (female_A.countOfMutationsOfType(m2) == 1){// 1 antibody copy
+								if ((any(IMMUNE_TYPE == HostType) & runif(1) > HETE_IMMUNE)|
+									  !any(IMMUNE_TYPE == HostType)){
+										female_A.setValue("Dengue", 1); // Vector is infected.
+										female_A.setValue("Serotype", HostType);}}
+								
+							else{			
+								female_A.setValue("Dengue", 1); // Vector is infected.
+								female_A.setValue("Serotype", HostType);}
+						}
+			
+    } // End of biting and disease transmission.
+    
+        
+	 // Start to reproduce.
+	 
+    // Check to see if mate was infertile because of drive mechanics.
+    if (female_A.tagF == 100.0)
+        next;
+
+    if (female_A.tag != 0) {
+        // Individual has mated, and may lay eggs.
+		  
+	     selected_mate = sample(p3.individuals, 1);
+
+        // Fecundity is based on female fitness.
+        // Number of offspring number based on binomial distrobution.
+        num_offspring = rpois(1, BETAMAX * 2);
+        num_offspring = num_offspring * fecundityFitness(female_A);
+        
+        if (GL_RUN)
+            num_offspring = num_offspring / BONUS_POP_FACTOR;
+
+        num_offspring = asInteger(round(num_offspring));
+        for (i in seqLen(num_offspring)) {
+        // Add offspring to the subpopulation.
+        	subpop.addCrossed(female_A, selected_mate);}
+	}
+}   
+
+// Then, species B find mate, bite and reproduce.
+
+for (female_B in adult_f_B){
+
+    // Check to see if this female is infertile because of drive mechanics:
+    if (isInfertile(female_B))
+        next;
+
+    if (female_B.tag == 0 | runif(1) < REMATE_CHANCE) 
+        // Individual has not yet mated, or want to remate.
+        
+        if (size(adult_m_B) > 0) {
+            // Females choose a random provisional mate, but make a final mating decision based on the
+            // attractiveness of that mate, as determined by the fitness of the mate. If a mate is
+            // rejected, the female tries again, up to a maximum number of tries, after which she gives up.
+            attempt_no = 0;
+            found_mate = F;
+            while (1) {
+                mate_no = 0;
+                if (size(adult_m_B) > 1)
+                    mate_no = rdunif(1, max=size(adult_m_B) - 1);
+                selected_mate = adult_m_B[mate_no];
+                // Determine attractiveness of potential mate.
+                mate_attractiveness = fecundityFitness(selected_mate);
+                // Determine if this mate is chosen, based on attractiveness.
+                if (runif(1) < mate_attractiveness) {
+                    found_mate = T;
+                    break;  // Select this mate.
+                }
+                // After ten candidates fail, female gives up.
+                attempt_no = attempt_no + 1;
+                if (attempt_no == MAX_ATTEMPTS_TO_FIND_SUITABLE_MATE)
+                    break;
+            }
+            if (found_mate) {
+                // Mate has now been selected, record his genotype.
+                female_B.setValue("maternal", setTag(selected_mate, maternal = T));
+                female_B.setValue("paternal", setTag(selected_mate, maternal = F));
+                female_B.tag = 1;
+                // Check to see if mate is infertile because of drive mechanics.
+                // tagF holds the somatic fitness multiplier of the mate.
+                if (isInfertile(selected_mate)) {
+                	female_B.tagF = 100.0;
+                  next;}
+                // Check to see if male somatic fitness penalty will decrease number of offspring. Fecundity effected only in offspring of D/+ males.   
+	             if (selected_mate.countOfMutationsOfType(m1) & selected_mate.countOfMutationsOfType(m2))
+                	female_B.tagF = SOMATIC_FITNESS_MULTIPLIER_M_2;
+                }
+            }
+    
+	 // Females bite.
+	 if (n_humans == 0)
+			next; // Female doesn't bite or reproduce.
+	 else if (runif(1) > ALBOPICTUS_BITING)
+	 		next; // Female doesn't want to bite.
+	 else{
+			human = humans[rdunif(1, 0, n_humans-1)];
+			
+	 		// Dengue transmission.
+		 	Host = human.getValue("Dengue");
+		 	Vector = female_B.getValue("Dengue");
+		 	HostType = human.getValue("Serotype");
+		 	VectorType = female_B.getValue("Serotype");
+		 	HostImmunity = human.getValue("Immunity");
+		 	Cross = human.getValue("CrossImmunity");
+		 	InfectionCounts = human.getValue("Counts");
+		 	
+			if (Cross == 0) // Host doesn't has short-term cross-immunity. 			 	
+		 		if (Host == 0) // Host is not infected/infective.	
+					if (Vector >= 1 + EXCUBATION){ // Vector is infected and infective.
+						if (!any(HostImmunity == VectorType) | runif(1) < REINFACTION) // Host is not immune to this serotype.
+							if (runif(1) < V_H_RATE){ // Host is unlucky engough.
+								human.setValue("Dengue", 1); // Host is infected.
+								human.setValue("Serotype", VectorType);
+								human.setValue("Immunity", c(VectorType, HostImmunity)); // Host get long-term immunity to this serotype.
+								human.setValue("CrossImmunity", CROSS_IMMUNITY); // Host get short-term cross-immunity to all strains.
+								InfectionCounts = InfectionCounts + 1;
+								human.setValue("Counts", InfectionCounts);
+							}
+					}
+				
+				// If Host = 1, infected but not infective, nothing happens.			
+			
+				if (Host >= (1 + EXCUBATION)) // Host is infected and infective.						
+					if (Vector == 0) // Vector is not infected/infective.
+						if (runif(1) < H_V_RATE){ // Vector is unlucky engough.
+							
+							// Check if vector has drive:
+							if (female_B.countOfMutationsOfType(m2) == 2){// 2 antibody copies
+								if ((any(IMMUNE_TYPE == HostType) & runif(1) > HOMO_IMMUNE)|
+									  !any(IMMUNE_TYPE == HostType)){
+										female_B.setValue("Dengue", 1); // Vector is infected.
+										female_B.setValue("Serotype", HostType);}}
+							
+							else if (female_B.countOfMutationsOfType(m2) == 1){// 1 antibody copy
+								if ((any(IMMUNE_TYPE == HostType) & runif(1) > HETE_IMMUNE)|
+									  !any(IMMUNE_TYPE == HostType)){
+										female_B.setValue("Dengue", 1); // Vector is infected.
+										female_B.setValue("Serotype", HostType);}}
+								
+							else{			
+								female_B.setValue("Dengue", 1); // Vector is infected.
+								female_B.setValue("Serotype", HostType);}
+						}
+			
+    } // End of biting and disease transmission.    
+        
+	 // Start to reproduce.
+	 
+    // Check to see if mate was infertile because of drive mechanics.
+    if (female_B.tagF == 100.0)
+        next;
+
+    if (female_B.tag != 0) {
+        // Individual has mated, and may lay eggs.
+		  
+	     selected_mate = sample(p3.individuals, 1);
+
+        // Fecundity is based on female fitness.
+        // Number of offspring number based on binomial distrobution.
+        num_offspring = rpois(1, BETAMAX * 2);
+        num_offspring = num_offspring * fecundityFitness(female_B);
+        
+        if (GL_RUN)
+            num_offspring = num_offspring / BONUS_POP_FACTOR;
+
+        num_offspring = asInteger(round(num_offspring));
+        for (i in seqLen(num_offspring)) {
+        // Add offspring to the subpopulation.
+        	subpop.addCrossed(female_B, selected_mate);}
+	}
+} 
+self.active = 0; // Prevent the self-loop.
+}
+
+//// START THE SIMULATION BY ADDING AN INITIAL WILD POPULATION.
+ticks all 1 early() {
+    // Start with a population of wild type flies.
+    vector.addSubpop("p1", asInteger(AEGYPTI_CAPACITY), CALC_INITIAL_MALE_AGE / (CALC_INITIAL_FEMALE_AGE + CALC_INITIAL_MALE_AGE));
+    A = p1.individuals;
+    A.genomes.addNewDrawnMutation(m5, 0);
+    
+    for (locus in 1:DRIVE_NUMBER)
+    	A.genomes.addNewDrawnMutation(m1, locus);
+    
+
+	 vector.addSubpop("p2", asInteger(ALBOPICTUS_CAPACITY), CALC_INITIAL_MALE_AGE / (CALC_INITIAL_FEMALE_AGE + CALC_INITIAL_MALE_AGE));	 
+	 B = p2.individuals;
+	 B.genomes.addNewDrawnMutation(m6, 0);
+	 for (locus in 1:DRIVE_NUMBER)
+    	B.genomes.addNewDrawnMutation(m1, locus);
+    
+
+    p1.takeMigrants(B);
+    p2.removeSubpopulation();
+    
+    female_ages = size(INITIAL_FEMALE_AGE_DISTRIBUTION);
+    male_ages = size(INITIAL_MALE_AGE_DISTRIBUTION);
+    
+    all = p1.individuals;
+    
+    for (ind in all) {
+        if (ind.sex == "F") {
+            ind.age = sample(0:female_ages, 1, F, c(FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * BETAMAX, INITIAL_FEMALE_AGE_DISTRIBUTION));
+        }
+        else {
+            ind.age = sample(0:male_ages, 1, F, c(FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * BETAMAX, INITIAL_MALE_AGE_DISTRIBUTION));
+        }
+    }
+    
+    all.tag = 0;
+    all.tagF = 1.0;
+    all.setValue("Dengue", 0);
+    all.setValue("Serotype", 0);
+
+    vector.addSubpop("p3", 1, 1.0);
+    p3.individuals.age = 5200;
+    
+    // Now set human subpop.
+    host.addSubpop("p100", HUMAN_POPULATION);
+	 humans = p100.individuals;
+	 humans.age = 1;
+	 // Set the dengue situation for everyone, healthy at first.
+	 humans.setValue("Dengue", 0);
+	 humans.setValue("Serotype", 0);
+	 humans.setValue("Immunity", c(0));
+	 humans.setValue("CrossImmunity", 0);
+	 humans.setValue("Counts", 0); 
+	 // A fraction of people is infected/had been infected with dengue.
+	 current_infection = asInteger(INITIAL_DENGUE * HUMAN_POPULATION);
+	 historical_infection = asInteger(HISTORICAL_DENGUE * HUMAN_POPULATION);
+	 total_infection = current_infection + historical_infection;
+	 
+	 if (current_infection > 0){	 
+	 	patients = p100.individuals[0:(current_infection - 1)];
+	 	
+	 	Original_State = c(runif(1), runif(1), runif(1), runif(1));
+    	SumValues = sum(Original_State);
+    	Sero = Original_State / SumValues;
+	 	
+	 	// Set their serotype and immunity.
+	 	 
+		for (patient in patients){
+	 		serotype = 0;
+	 		chance = runif(1);	
+    		if (chance < Sero[0])
+    			serotype = 1;
+   		else if (chance < Sero[0] + Sero[1])
+    			serotype = 2;
+    		else if (chance < Sero[0] + Sero[1] + Sero[2])
+    			serotype = 3;
+    		else
+    			serotype = 4;	 
+		
+	 	patient.setValue("Serotype", serotype);
+	 	patient.setValue("Immunity", c(0, serotype));
+	 	patient.setValue("Counts", 1);	 	
+	 	
+	 	// Now set their infection state.
+	 	if (runif(1) < 0.5){
+	 		// Half of them are in incubation period.
+	 		patient.setValue("Dengue", 1);
+	 		patient.setValue("CrossImmunity", CROSS_IMMUNITY);}
+	 		// Half of them are infective.
+	 	else{
+	 		patient.setValue("Dengue", 2);
+	 		patient.setValue("CrossImmunity", (CROSS_IMMUNITY - 1));}
+	 	}
+	 }	
+	 	
+	 if (historical_infection > 0){	
+	 	historical_patients = p100.individuals[current_infection:(total_infection - 1)];
+	 
+	 	Original_State = c(runif(1), runif(1), runif(1), runif(1));
+    	SumValues = sum(Original_State);
+    	Sero = Original_State / SumValues;
+	 	
+	 	// Set their serotype and immunity.
+	 	 
+		for (historical_patient in historical_patients){
+	 		serotype = 0;
+	 		chance = runif(1);	
+    			
+    		if (chance < Sero[0])
+    			serotype = 1;
+   		else if (chance < Sero[0] + Sero[1])
+    			serotype = 2;
+    		else if (chance < Sero[0] + Sero[1] + Sero[2])
+    			serotype = 3;
+    		else
+    			serotype = 4;	 
+		
+	 	historical_patient.setValue("Serotype", serotype);
+	 	historical_patient.setValue("Immunity", c(0, serotype));
+	 	historical_patient.setValue("Counts", 1);	 	
+	 	
+	 	// Now set their infection state.
+
+	 	historical_patient.setValue("Dengue", 0);
+	 	historical_patient.setValue("CrossImmunity", 0);
+	 	
+	 	}
+	 }
+}
+
+
+//// DROP A GROUP OF MODIFIED INDIVIDUALS INTO THE POPULATION.
+ticks all first() {
+
+	 if(!DROP)
+	 	return;
+	 
+	 if(vector.cycle < DROP_TIME)
+	 	return;
+	 	
+	 if((vector.cycle - DROP_TIME)%DROP_INTERVAL != 0)
+		return;
+
+	 index = asInteger((vector.cycle - DROP_TIME)/DROP_INTERVAL + 1);	 
+	 
+	 if(index > DRIVE_NUMBER)
+		return;
+	 
+	 subpop_id_A = asInteger(4 + 2*(index - 1));
+	 
+	 subpop_id_B = subpop_id_A + 1;
+	 
+    // Add a drop of modified species A individuals.   
+    vector.addSubpop("p" + subpop_id_A, asInteger(DROP_SIZE_1), 1.0);
+    drop1 = vector.subpopulations[2].individuals;
+    drop1.age = 2;
+    drop1.tag = 0;
+    drop1.tagF = 1.0;
+    // We don't really need to set these values since drop individuals are male. But to avoid potential bugs, set them.
+	 drop1.setValue("Dengue", 0);
+	 drop1.setValue("Serotype", 0);
+    // Now set the drop individuals to the correct genotypes:
+    drop1.genomes.addNewDrawnMutation(m5, 0);
+    for (locus in 1:DRIVE_NUMBER)
+    	drop1.genomes.addNewDrawnMutation(m1, locus);
+	 drop1.genomes.addNewDrawnMutation(m2, index);
+
+    // For heterozygous drop, one of the chromosomes is set to wild type:
+    if (HETEROZYGOUS_DROP)
+    	drop1.genome2.addNewDrawnMutation(m1, index);
+	 
+	 // Then add a drop of modified species B individuals.
+	 vector.addSubpop("p" + subpop_id_B, asInteger(DROP_SIZE_2), 1.0);
+    drop2 = vector.subpopulations[3].individuals;
+    drop2.age = 2;
+    drop2.tag = 0;
+    drop2.tagF = 1.0;
+	 drop2.setValue("Dengue", 0);
+	 drop2.setValue("Serotype", 0);
+    // Now set the drop individuals to the correct genotypes:
+    drop2.genomes.addNewDrawnMutation(m6, 0);
+	 for (locus in 1:DRIVE_NUMBER)
+    	drop2.genomes.addNewDrawnMutation(m1, locus);
+	 drop2.genomes.addNewDrawnMutation(m2, index);
+
+    // For heterozygous drop, one of the chromosomes is set to wild type:
+    if (HETEROZYGOUS_DROP)
+    	drop2.genome2.addNewDrawnMutation(m1, index);
+
+    // Now that genes have been set, move all the individuals from the drop into p1:
+    p1.takeMigrants(drop1);
+    p1.takeMigrants(drop2);
+    vector.subpopulations[2].removeSubpopulation();
+    vector.subpopulations[2].removeSubpopulation();// This should be subpopulations[3], but we removed one before, so it's now [2].
+    
+    catn("DROPPED" + " : " + vector.cycle);
+    
+}
+
+//// AGE BASED SURVIVAL RULES / VIABILITY COMPETITION.
+ticks all early() {
+	 // First, apply survival rules for vectors.
+    all = p1.individuals;
+    new = all[all.age == 0];
+    adults = all[all.age > 0];
+    new_larvae_A = new[new.countOfMutationsOfType(m5) > 0];// Aedes aegypti.
+    new_larvae_B = new[new.countOfMutationsOfType(m6) > 0];// Aedes albopictus.
+    sum_new_larvae_A = size(new_larvae_A);
+    sum_new_larvae_B = size(new_larvae_B);
+    
+    if ((SEASON)&(vector.cycle > 15)) {		
+		now_gen = asInteger((vector.cycle - 15) % 52);
+		adjust_female = NUM_ADULT_FEMALES * (1 + SEASONAL_AMPLITUDE * SEASONAL(now_gen, SEASONAL_DURATION));
+		defineGlobal("EXPECTED_COMPETITION_A", adjust_female * AEGYPTI_PORTION * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK + ALBOPICTUS_PORTION * adjust_female * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * INTERSPECIFIC_COMP_FACTOR_B);
+	 	defineGlobal("EXPECTED_COMPETITION_B", adjust_female * ALBOPICTUS_PORTION * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK + adjust_female * AEGYPTI_PORTION * 2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK * INTERSPECIFIC_COMP_FACTOR_A);
+		}
+	 
+	 total_competition_A = sum_new_larvae_A + sum_new_larvae_B * INTERSPECIFIC_COMP_FACTOR_B;
+	 total_competition_B = sum_new_larvae_B + sum_new_larvae_A * INTERSPECIFIC_COMP_FACTOR_A;
+	 competition_ratio_A = total_competition_A / EXPECTED_COMPETITION_A;
+	 competition_ratio_B = total_competition_B / EXPECTED_COMPETITION_B;
+	
+    concave_A = 2 * INITIAL_FEMALE_AGE_DISTRIBUTION[0] * (LOW_DENSITY_GROWTH_RATE / (2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK) / ((LOW_DENSITY_GROWTH_RATE - 1) * competition_ratio_A + 1));
+    
+    linear_A = 2 * INITIAL_FEMALE_AGE_DISTRIBUTION[0] * (((1 - LOW_DENSITY_GROWTH_RATE) * competition_ratio_A) + LOW_DENSITY_GROWTH_RATE) / (2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK);
+    
+    concave_B = (LOW_DENSITY_GROWTH_RATE / (2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK) / ((LOW_DENSITY_GROWTH_RATE - 1) * competition_ratio_B + 1)) * (2 * INITIAL_FEMALE_AGE_DISTRIBUTION[0]);
+    
+    linear_B = 2 * INITIAL_FEMALE_AGE_DISTRIBUTION[0] * (((1 - LOW_DENSITY_GROWTH_RATE) * competition_ratio_B) + LOW_DENSITY_GROWTH_RATE) / (2 * BETAMAX * FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK);
+    
+    if (competition_ratio_A > 1)
+    	viability_A = concave_A;
+    else
+    	viability_A = 0.5 * (concave_A + linear_A);
+    	
+    if (competition_ratio_B > 1)
+    	viability_B = concave_B;
+    else
+    	viability_B = 0.5 * (concave_B + linear_B);
+   
+    for (A in new_larvae_A) {
+    	A.fitnessScaling = genotypeFitness(A) * viability_A;
+    	A.setValue("Dengue", 0);
+    	A.setValue("Serotype", 0);}
+    for (B in new_larvae_B) {
+    	B.fitnessScaling = genotypeFitness(B) * viability_B;
+    	B.setValue("Dengue", 0);
+    	B.setValue("Serotype", 0);}
+	 
+	 for (adult in adults){
+	 	if (adult.sex == "M")
+    		adult.fitnessScaling = genotypeFitness(adult) * SURVIVE_RATE_M[adult.age - 1];
+    	else
+    		adult.fitnessScaling = genotypeFitness(adult) * SURVIVE_RATE_F[adult.age - 1];	
+    	}
+}
+
+// Progression of disease and introduction of dengue mosquitos/humans
+ticks all 16: late(){
+	 all = p1.individuals;
+    adults = all[all.age > 1];
+    female_adults = adults[adults.sex == "F"];
+    
+//    pure_female_adults = c();
+//    if (size(female_adults) > 0){
+//    	pure_female_adults = female_adults[female_adults.getValue("Dengue") == 0];}
+//    pure_fertile_female_adults = c();
+//    for (female in pure_female_adults)
+//    	pure_fertile_female_adults = c(pure_fertile_female_adults, female[!isInfertile(female)]);
+//    num_pure_fertile_female_adults = size(pure_fertile_female_adults);
+//    
+    // Progression of dengue in mosquitos
+	 for (female_adult in female_adults){
+    	dengue = female_adult.getValue("Dengue");
+    	if (dengue > 0){ // Vector is infected.
+    		dengue = dengue + 1;
+    		female_adult.setValue("Dengue", dengue);
+    		}  	
+    	}
+//    
+//    // Introduction of dengue mosquitos
+//	 
+//    if ((SEASON)&(vector.cycle > 15)){
+//   	 now_gen = asInteger((vector.cycle - 15) % 52);
+//	 	 adjust_female = NUM_ADULT_FEMALES * (1 + SEASONAL_AMPLITUDE * SEASONAL(now_gen, SEASONAL_DURATION));    
+//	 	 Intro_Mos = asInteger(adjust_female * INTRO_MOS);
+//	 	 print("INTRO_MOS: " + Intro_Mos);
+//	 	 intro_mos = 0;
+//	 	 defineGlobal("Intro_Mosquito", intro_mos);
+//	 	 if(Intro_Mos >= 1 & num_pure_fertile_female_adults >= Intro_Mos){
+//	 	 	intro_mos = Intro_Mos;
+//	 	 	defineGlobal("Intro_Mosquito", intro_mos);
+//	 	 	introMos = sample(pure_fertile_female_adults, Intro_Mos);
+//	 	 	for (mos in introMos){
+//	 			rate = runif(1);
+//	 			mos.setValue("Dengue", 2);    
+//    			serotype = 0;	
+//    				if (rate < INITIAL_DENGUE_1)
+//    					serotype = 1;
+//   				else if (rate < INITIAL_DENGUE_1 + INITIAL_DENGUE_2)
+//    					serotype = 2;
+//    				else if (rate < INITIAL_DENGUE_1 + INITIAL_DENGUE_2 + INITIAL_DENGUE_3)
+//    					serotype = 3;
+//    				else
+//    					serotype = 4;
+//    			mos.setValue("Serotype", serotype);}
+//    }}
+    
+    humans = p100.individuals;
+    sum_human = size(humans);
+    
+    // Progression of dengue in humans
+    for (human in humans){
+    	human.fitnessScaling = 1 - DECREASE; // Remove some human
+    	infection = human.getValue("Dengue");
+    	cross = human.getValue("CrossImmunity");
+    	if (infection >= 1){
+    		infection = infection + 1;
+    		if (infection == 1 + INCUBATION + CURE_WEEKS)
+    			infection = 0;
+    		human.setValue("Dengue", infection);}
+    	if (cross >= 1){
+    		cross = cross - 1;
+    		human.setValue("CrossImmunity", cross);}
+    }
+    
+    // Add some new ones
+    
+    id = ID + 1;
+	 defineGlobal("ID", id);
+	 new_human = asInteger(sum_human * INCREASE);
+	 	if (new_human < 1)
+	 		new_human = 1; 
+    host.addSubpop(ID, new_human);
+    new = host.subpopulations[ID - 100].individuals;
+    new.setValue("Dengue", 0);
+    new.setValue("Serotype", 0);
+    new.setValue("Immunity", c(0));
+    new.setValue("CrossImmunity", 0);
+    new.setValue("Counts", 0);
+    
+    // Ramdomly, dengue is introduced.
+    if ((SEASON)&(vector.cycle > 15)){
+    	now_gen = asInteger((vector.cycle - 15) % 52);
+    	weekly_chance = WEEKLY_INTRODUCTION_RATE * LessSEASONAL(now_gen);
+		print("INTRO_HUMAN_CHANCE: " + weekly_chance);
+		intro_human = 0;
+		defineGlobal("Intro_Human", intro_human);    	
+    		if (runif(1) < weekly_chance){
+    			intro_human = 1;
+				defineGlobal("Intro_Human", intro_human);
+    			new[0].setValue("Dengue", 1);
+    			new[0].setValue("CrossImmunity", CROSS_IMMUNITY);
+    			new[0].setValue("Counts", 1);
+    
+    			serotype = 0;
+    			chance = runif(1);	
+    			if (chance < INITIAL_DENGUE_1)
+    				serotype = 1;
+   			else if (chance < INITIAL_DENGUE_1 + INITIAL_DENGUE_2)
+    				serotype = 2;
+    			else if (chance < INITIAL_DENGUE_1 + INITIAL_DENGUE_2 + INITIAL_DENGUE_3)
+    				serotype = 3;
+    			else
+    				serotype = 4;
+    		
+    			new[0].setValue("Serotype", serotype);
+    			new[0].setValue("Immunity", c(0, serotype));}}
+    	   
+    p100.takeMigrants(new);   
+    	    
+}
+
+//// OUTPUT.
+ticks all early(){
+	 this_gen = vector.cycle;
+	 
+	 Mosquitos = p1.individuals;
+	 Adult_Mos = Mosquitos[Mosquitos.age >= 2];
+	 Num_Adult_Mos = size(Adult_Mos);
+	 Adult_Female_Mos = Adult_Mos[Adult_Mos.sex == "F"];
+	 Adult_Male_Mos = Adult_Mos[Adult_Mos.sex == "M"];
+	 Num_Adult_Female_Mos = size(Adult_Female_Mos);
+	 Fertile_Female_Mos = c();
+	 InFertile_Female_Mos = c();
+	 for (female in Adult_Female_Mos){
+	 	InFertile_Female_Mos = c(InFertile_Female_Mos, female[isInfertile(female)]);
+	 	Fertile_Female_Mos = c(Fertile_Female_Mos, female[!isInfertile(female)]);}
+	 Num_Fertile_Female_Mos = size(Fertile_Female_Mos);
+	 Num_InFertile_Female_Mos = size(InFertile_Female_Mos);
+	 
+	 num_wt = c();
+	 num_dr = c();
+	 num_r1 = c();
+	 num_r2 = c();
+	 
+	 Rate_wt = c();
+	 Rate_dr = c();
+	 Rate_r1 = c();
+	 Rate_r2 = c();
+	 
+	 for (locus in 1:DRIVE_NUMBER){	 
+	 
+	 	num_wt = c(num_wt, 0.0);
+	 	num_dr = c(num_dr, 0.0);
+	 	num_r1 = c(num_r1, 0.0);
+	 	num_r2 = c(num_r2, 0.0);
+	 	
+	 	Rate_wt = c(Rate_wt, 0.0);
+	 	Rate_dr = c(Rate_dr, 0.0);
+	 	Rate_r1 = c(Rate_r1, 0.0);
+	 	Rate_r2 = c(Rate_r2, 0.0);}
+	 
+	 for (locus in 1:DRIVE_NUMBER){
+	 
+	 	num_wt[locus-1] = sum(Adult_Mos.genomes.containsMarkerMutation(m1, locus));
+	 	num_dr[locus-1] = sum(Adult_Mos.genomes.containsMarkerMutation(m2, locus));
+	 	num_r1[locus-1] = sum(Adult_Mos.genomes.containsMarkerMutation(m3, locus));
+	 	num_r2[locus-1] = sum(Adult_Mos.genomes.containsMarkerMutation(m4, locus));
+	 
+	 	Rate_wt[locus-1] = num_wt[locus-1] / (2 * Num_Adult_Mos);
+	 	Rate_dr[locus-1] = num_dr[locus-1] / (2 * Num_Adult_Mos);
+	 	Rate_r1[locus-1] = num_r1[locus-1] / (2 * Num_Adult_Mos);
+	 	Rate_r2[locus-1] = num_r2[locus-1] / (2 * Num_Adult_Mos);}	 
+	 
+	 Infected_Female = sum(Adult_Female_Mos.getValue("Dengue") > 0);
+	 Infected_Female_Rate = Infected_Female/Num_Adult_Female_Mos * 100; 
+	 
+	 Aegypti = Adult_Mos[Adult_Mos.countOfMutationsOfType(m5) > 0];
+	 Num_Aegypti = size(Aegypti);
+	 Female_Aegypti = Aegypti[Aegypti.sex == "F"];
+	 Num_Female_Aegypti = size(Female_Aegypti);
+	 Infected_Female_Aegypti = sum(Female_Aegypti.getValue("Dengue") > 0);
+	 Infected_Female_Aegypti_Rate = Infected_Female_Aegypti / Num_Female_Aegypti * 100;
+	 Homo_Fe = sum(Female_Aegypti.countOfMutationsOfType(m2) == 2);
+	 Hete_Fe = sum(Female_Aegypti.countOfMutationsOfType(m2) == 1);
+	 Rate_Homo_Fe = Homo_Fe / Num_Female_Aegypti * 100;
+	 Rate_Hete_Fe = Hete_Fe / Num_Female_Aegypti * 100;
+	 Antibody_Prevalence = 2*Rate_Homo_Fe + Rate_Hete_Fe;
+	 
+	 /*Albopictus = 0;
+	 Num_Albopictus = 0;
+	 Female_Albopictus = 0;
+	 Num_Female_Albopictus = 0;
+	 Infected_Female_Albopictus = 0;
+	 Infected_Female_Albopictus_Rate = 0;
+	 
+	 if(ALBOPICTUS_PORTION > 0){
+	 Albopictus = Adult_Mos[Adult_Mos.countOfMutationsOfType(m6) > 0];
+	 Num_Albopictus = size(Albopictus);
+	 Female_Albopictus = Albopictus[Albopictus.sex == "F"];
+	 Num_Female_Albopictus = size(Female_Albopictus);
+	 Infected_Female_Albopictus = sum(Female_Albopictus.getValue("Dengue") > 0);
+	 Infected_Female_Albopictus_Rate = Infected_Female_Albopictus / Num_Female_Albopictus * 100;}*/
+	 
+	 Humans = p100.individuals;
+	 Population = size(Humans);
+	 	 
+	 Current_Type1 = 0;
+	 Current_Type2 = 0;
+	 Current_Type3 = 0;
+	 Current_Type4 = 0;
+	 Current_Infection = 0;
+	 Current_ADE = 0;
+	 Infection_Rate = 0;
+	 
+	 Weekly_new_Type1 = 0;
+	 Weekly_new_Type2 = 0;
+	 Weekly_new_Type3 = 0;
+	 Weekly_new_Type4 = 0;
+	 Weekly_new_Infection = 0;
+	 Weekly_new_ADE = 0;
+	 
+	 Current_Dengue = Humans[Humans.getValue("Dengue") > 0];
+	 	if(size(Current_Dengue) > 0){
+	 	Current_Type1 = sum(Current_Dengue.getValue("Serotype") == 1);
+	 	Current_Type2 = sum(Current_Dengue.getValue("Serotype") == 2);
+	 	Current_Type3 = sum(Current_Dengue.getValue("Serotype") == 3);
+	 	Current_Type4 = sum(Current_Dengue.getValue("Serotype") == 4);
+	 	Current_Infection = size(Current_Dengue);
+	 	Current_ADE = sum(Current_Dengue.getValue("Counts") >= 2);
+	 	Infection_Rate = Current_Infection / Population * 100; 
+		
+	 Weekly_New_Dengue = Current_Dengue[Current_Dengue.getValue("Dengue") == 1];
+	 	if (size(Weekly_New_Dengue) > 0){
+		Weekly_new_Type1 = sum(Weekly_New_Dengue.getValue("Serotype") == 1);
+		Weekly_new_Type2 = sum(Weekly_New_Dengue.getValue("Serotype") == 2);
+		Weekly_new_Type3 = sum(Weekly_New_Dengue.getValue("Serotype") == 3);
+		Weekly_new_Type4 = sum(Weekly_New_Dengue.getValue("Serotype") == 4);
+	 	Weekly_new_Infection = size(Weekly_New_Dengue);
+	 	Weekly_new_ADE = sum(Weekly_New_Dengue.getValue("Counts") >= 2);}}
+	 	
+	 Pure = sum(Humans.getValue("Counts") == 0);
+	 Pure_Rate = Pure / Population * 100;
+	 
+	 total_immunity = 0;
+	 
+	 for (human in Humans){
+	 total_immunity = total_immunity + size(human.getValue("Immunity")) - 1;}
+	 
+	 Pop_immune = total_immunity/Population/4;
+	 
+	 Weekly_New_Native_Infection = Weekly_new_Infection - Intro_Human;
+	 	
+	 catn("MOS:: " + this_gen + " " + Num_Adult_Mos + " " + Num_Adult_Female_Mos + " " + Rate_Homo_Fe + " " + Rate_Hete_Fe + " " + LATE_GERMLINE_RESISTANCE_CUT_RATE_1 + " " + EMBRYO_RESISTANCE_CUT_RATE_1 + " " + DD_FITNESS_VALUE_1);
+	 
+	 catn("DENGUE:: " + Weekly_New_Native_Infection + " " + Population + " " + Intro_Human + " " + Weekly_new_Infection + " " + Weekly_new_Type1 + " " + Weekly_new_Type2 + " " +  Weekly_new_Type3 + " " + Weekly_new_Type4 + " " + Weekly_new_ADE + " " + Pop_immune);
+	 
+	 for (locus in 1:DRIVE_NUMBER)
+	 	catn("DRIVE" + locus + ":: " + Rate_wt[locus-1] + " " + Rate_dr[locus-1] + " " + Rate_r1[locus-1] + " " + Rate_r2[locus-1]);
+	 
+	 if(Num_Fertile_Female_Mos == 0 | p1.individualCount == 0){
+	 
+	 catn("SUPPRESSED:: " + this_gen + " " + LATE_GERMLINE_RESISTANCE_CUT_RATE_1 + " " + EMBRYO_RESISTANCE_CUT_RATE_1 + " " + DD_FITNESS_VALUE_1);
+	 
+	 community.simulationFinished();}
+	 
+	 /*if(DROP & (vector.cycle > DROP_TIME)){
+	 	drive_low = DRIVE_LOW;
+	 	if(Rate_dr < 0.05)
+	 		drive_low = drive_low + 1;
+	 	else
+	 		drive_low = 0;
+	 	defineGlobal("DRIVE_LOW", drive_low);
+	 	
+	 	if (drive_low > 10){
+	 	catn("FAILED:: " + this_gen + " " + Num_Adult_Mos + " " + Num_Adult_Female_Mos + " " + Num_Fertile_Female_Mos + " " + Num_InFertile_Female_Mos + " " + Infected_Female + " " + Num_Female_Aegypti + " " + Rate_wt + " " + Rate_dr + " " + Rate_r1 + " " + Rate_r2 + " " + Population + " " + Current_Infection + " " + Infection_Rate + " " + Current_Type1 + " " + Current_Type2 + " " + Current_Type3 + " " + Current_Type4 + " " + Current_ADE + " " + Weekly_new_Infection + " " + Weekly_new_Type1 + " " + Weekly_new_Type2 + " " +  Weekly_new_Type3 + " " + Weekly_new_Type4 + " " + Weekly_new_ADE + " " + Pure_Rate);
+	 	
+	 	community.simulationFinished();
+	 	}	 
+	 }*/
+	 
+	 // DEBUG
+	 /*
+	 Non_adult = Mosquitos[Mosquitos.age < 2];
+	 if(any(Non_adult.getValue("Dengue") > 0))
+	 	print("ERROR1!");
+	 Male = Mosquitos[Mosquitos.sex == "M"];
+	 if(any(Male.getValue("Dengue") > 0))
+	 	print("ERROR2!");
+	 if(Num_InFertile_Female_Mos > 0)
+	 	if(any(InFertile_Female_Mos.getValue("Dengue") > 0))
+	 		print("ERROR3!");*/
+	 
+//	 Offspring = Mosquitos[Mosquitos.age == 0];
+//	 Young = Mosquitos[Mosquitos.age == 1];	 
+//	 
+//	 dd = sum(Adult_Mos.countOfMutationsOfType(m2) == 2);
+//	 dw = sum(Adult_Mos.countOfMutationsOfType(m1) == 1 & Adult_Mos.countOfMutationsOfType(m2) == 1);
+//	 ww = sum(Adult_Mos.countOfMutationsOfType(m1) == 2);
+//	 dr = sum(Adult_Mos.countOfMutationsOfType(m4) == 1 & Adult_Mos.countOfMutationsOfType(m2) == 1);
+//	 
+//	 dd0 = sum(Offspring.countOfMutationsOfType(m2) == 2);
+//	 dw0 = sum(Offspring.countOfMutationsOfType(m1) == 1);
+//	 ww0 = sum(Offspring.countOfMutationsOfType(m1) == 2);
+//	 
+//	 dd1 = sum(Young.countOfMutationsOfType(m2) == 2);
+//	 dw1 = sum(Young.countOfMutationsOfType(m1) == 1);
+//	 ww1 = sum(Young.countOfMutationsOfType(m1) == 2);
+//	 
+//	 ddf = sum(Adult_Female_Mos.countOfMutationsOfType(m2) == 2);
+//	 dwf = sum(Adult_Female_Mos.countOfMutationsOfType(m1) == 1 & Adult_Female_Mos.countOfMutationsOfType(m2) == 1);
+//	 wwf = sum(Adult_Female_Mos.countOfMutationsOfType(m1) == 2);
+//	 drf = sum(Adult_Female_Mos.countOfMutationsOfType(m4) == 1 & Adult_Female_Mos.countOfMutationsOfType(m2) == 1);
+//	 rrf = sum(Adult_Female_Mos.countOfMutationsOfType(m4) == 2);
+//	 
+//	 catn(dd + " " + dw + " " + ww + " " + dr + " " + ddf + " " + dwf + " " + wwf + " " + drf + " " + rrf); 
+	 
+}
+
+////END CONDITION.
+ticks all 1055 late() {
+    catn("NOT:: " ); // 15 + 52 * 10 + 15
+    community.simulationFinished();
+}
+
+////INITIALIZE OUTPUT
+ticks all 1 first() {
+catn("ID : " + ID);
+catn("GL_RUN : " + GL_RUN);
+catn("BONUS_POP_FACTOR : " + BONUS_POP_FACTOR);
+catn("PREV_BONUS_POP_FACTOR : " + PREV_BONUS_POP_FACTOR);
+catn("ACTUAL_LARVAE : " + ACTUAL_LARVAE);
+
+catn("BITING : " + BITING);
+catn("REMATE_CHANCE : " + REMATE_CHANCE);
+catn("BETAMAX : " + BETAMAX);
+catn("FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK : " + FRACTION_OF_FEMALES_THAT_REPRODUCE_PER_WEEK);
+catn("FEMALE_WEEKS_OF_GENERATION : " + FEMALE_WEEKS_OF_GENERATION);
+catn("MALE_WEEKS_OF_GENERATION : " + MALE_WEEKS_OF_GENERATION);
+
+catn("INITIAL_FEMALE_AGE_DISTRIBUTION : ");
+catn(INITIAL_FEMALE_AGE_DISTRIBUTION);
+catn("FEMALE_LIFESPAN : ");
+catn(FEMALE_LIFESPAN);
+catn("INITIAL_MALE_AGE_DISTRIBUTION : ");
+catn(INITIAL_MALE_AGE_DISTRIBUTION);
+catn("MALE_LIFESPAN : ");
+catn(MALE_LIFESPAN);
+
+catn("SURVIVE_RATE_M : ");
+catn(SURVIVE_RATE_M);
+catn("SURVIVE_RATE_F : ");
+catn(SURVIVE_RATE_F);
+
+catn("NUM_ADULT_FEMALES : " + NUM_ADULT_FEMALES);
+catn("TOTAL_FEMALES : " + TOTAL_FEMALES);
+catn("CALC_INITIAL_FEMALE_AGE : " + CALC_INITIAL_FEMALE_AGE);
+catn("CALC_INITIAL_MALE_AGE : " + CALC_INITIAL_MALE_AGE);
+catn("CAPACITY : " + CAPACITY);
+
+catn("AEGYPTI_PORTION : " + AEGYPTI_PORTION);
+catn("AEGYPTI_CAPACITY : " + AEGYPTI_CAPACITY);
+catn("AEGYPTI_BITING : " + AEGYPTI_BITING);
+
+catn("ALBOPICTUS_PORTION : " + ALBOPICTUS_PORTION);
+catn("ALBOPICTUS_CAPACITY : " + ALBOPICTUS_CAPACITY);
+catn("ALBOPICTUS_BITING : " + ALBOPICTUS_BITING);
+
+catn("HUMAN_POPULATION : " + HUMAN_POPULATION);
+catn("DECREASE : " + DECREASE);
+catn("INCREASE : " + INCREASE);
+catn("INITIAL_DENGUE : " + INITIAL_DENGUE);
+catn("HISTORICAL_DENGUE : " + HISTORICAL_DENGUE);
+
+catn("INITIAL_DENGUE_1 : " + INITIAL_DENGUE_1);
+catn("INITIAL_DENGUE_2 : " + INITIAL_DENGUE_2);
+catn("INITIAL_DENGUE_3 : " + INITIAL_DENGUE_3);
+catn("INITIAL_DENGUE_4 : " + INITIAL_DENGUE_4);
+
+catn("H_V_RATE : " + H_V_RATE);
+catn("V_H_RATE : " + V_H_RATE);
+catn("EXCUBATION : " + EXCUBATION);
+catn("INCUBATION : " + INCUBATION);
+catn("CURE_WEEKS : " + CURE_WEEKS);
+catn("CROSS_IMMUNITY : " + CROSS_IMMUNITY);
+catn("WEEKLY_INTRODUCTION_RATE : " + WEEKLY_INTRODUCTION_RATE);
+catn("INTRO_MOS : " + INTRO_MOS);
+catn("REINFACTION : " + REINFACTION);
+
+catn("SEASON : " + SEASON);
+catn("SEASONAL_AMPLITUDE : " + SEASONAL_AMPLITUDE);
+catn("SEASONAL_DURATION : " + SEASONAL_DURATION);
+
+catn("Intro_Mosquito : " + Intro_Mosquito);
+catn("Intro_Human : " + Intro_Human);
+
+catn("INTERSPECIFIC_COMP_FACTOR_A : " + INTERSPECIFIC_COMP_FACTOR_A);
+catn("INTERSPECIFIC_COMP_FACTOR_B : " + INTERSPECIFIC_COMP_FACTOR_B);
+catn("EXPECTED_COMPETITION_A : " + EXPECTED_COMPETITION_A);
+catn("EXPECTED_COMPETITION_B : " + EXPECTED_COMPETITION_B);
+
+catn("DROP : " + DROP);
+catn("DRIVE_NUMBER : " + DRIVE_NUMBER);
+catn("DROP_TIME : " + DROP_TIME);
+catn("DROP_INTERVAL : " + DROP_INTERVAL);
+
+catn("IMMUNE_TYPE : ");
+catn(IMMUNE_TYPE);
+
+catn("HOMO_IMMUNE : " + HOMO_IMMUNE);
+catn("HETE_IMMUNE : " + HETE_IMMUNE);
+catn("HAPLOLETHAL : " + HAPLOLETHAL);
+catn("HAPLOSUFFICIENT : " + HAPLOSUFFICIENT);
+catn("ADJUST : " + ADJUST);
+
+catn("DROP_1 : " + DROP_1);
+catn("DROP_SIZE_1 : " + DROP_SIZE_1);
+catn("DD_FITNESS_VALUE_1 : " + DD_FITNESS_VALUE_1);
+catn("DX_FITNESS_VALUE_1 : " + DX_FITNESS_VALUE_1);
+catn("DRIVE_CONVERSION_RATE_1 : " + DRIVE_CONVERSION_RATE_1);
+catn("LATE_GERMLINE_RESISTANCE_CUT_RATE_1 : " + LATE_GERMLINE_RESISTANCE_CUT_RATE_1);
+catn("EMBRYO_RESISTANCE_CUT_RATE_1 : " + EMBRYO_RESISTANCE_CUT_RATE_1);
+catn("SOMATIC_FITNESS_MULTIPLIER_F_1 : " + SOMATIC_FITNESS_MULTIPLIER_F_1);
+catn("SOMATIC_FITNESS_MULTIPLIER_M_1 : " + SOMATIC_FITNESS_MULTIPLIER_M_1);
+catn("R1_OCCURRENCE_RATE_1 : " + R1_OCCURRENCE_RATE_1);
+
+catn("DROP_2 : " + DROP_2);
+catn("DROP_SIZE_2 : " + DROP_SIZE_2);
+catn("DD_FITNESS_VALUE_2 : " + DD_FITNESS_VALUE_2);
+catn("DX_FITNESS_VALUE_2 : " + DX_FITNESS_VALUE_2);
+catn("DRIVE_CONVERSION_RATE_2 : " + DRIVE_CONVERSION_RATE_2);
+catn("LATE_GERMLINE_RESISTANCE_CUT_RATE_2 : " + LATE_GERMLINE_RESISTANCE_CUT_RATE_2);
+catn("EMBRYO_RESISTANCE_CUT_RATE_2 : " + EMBRYO_RESISTANCE_CUT_RATE_2);
+catn("SOMATIC_FITNESS_MULTIPLIER_F_2 : " + SOMATIC_FITNESS_MULTIPLIER_F_2);
+catn("SOMATIC_FITNESS_MULTIPLIER_M_2 : " + SOMATIC_FITNESS_MULTIPLIER_M_2);
+catn("R1_OCCURRENCE_RATE_2 : " + R1_OCCURRENCE_RATE_2);
+
+catn("MAX_ATTEMPTS_TO_FIND_SUITABLE_MATE : " + MAX_ATTEMPTS_TO_FIND_SUITABLE_MATE);
+catn("LOW_DENSITY_GROWTH_RATE : " + LOW_DENSITY_GROWTH_RATE);
+catn("HETEROZYGOUS_DROP : " + HETEROZYGOUS_DROP);
+
+catn("DRIVE_LOW : " + DRIVE_LOW);
+
+
+}
